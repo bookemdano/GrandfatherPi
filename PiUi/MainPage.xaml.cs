@@ -1,17 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Windows.Data.Json;
 using Windows.Media.SpeechSynthesis;
-using Windows.Networking;
-using Windows.Networking.Sockets;
-using Windows.Storage.Streams;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
-
-// The Blank Page item template is documented at http://go.microsoft.com/fwlink/?LinkId=402352&clcid=0x409
+using Windows.UI.Xaml.Media;
 
 namespace PiUi
 {
@@ -20,58 +17,32 @@ namespace PiUi
     /// </summary>
     public sealed partial class MainPage : Page
     {
-        TimeSpan _interval = TimeSpan.FromMinutes(15);
-        TimeSpan _alarmCheckInterval = TimeSpan.FromSeconds(30);
-        DispatcherTimer _bongTimer = new DispatcherTimer();
+        TimeSpan _announceInterval = TimeSpan.FromMinutes(30);
+        TimeSpan _checkInterval = TimeSpan.FromSeconds(30);
+        bool _honorQuietTime = true;
         public MainPage()
         {
             this.InitializeComponent();
-            Log("Start");
-            _bongTimer.Interval = TimeSpan.FromSeconds(5);
-            _bongTimer.Tick += Timer_Tick;
-            _bongTimer.Start();
-            var timer = new DispatcherTimer();
-            timer.Interval = _alarmCheckInterval;
-            timer.Tick += AlarmTimer_Tick;
-            timer.Start();
-        }
-
-        private async void AlarmTimer_Tick(object sender, object e)
-        {
-            await SetOffset();
-            if (_its.Count > 0)
+#if DEBUG
+            if (System.Diagnostics.Debugger.IsAttached)
             {
-                foreach(var it in _its)
-                {
-                    if (Math.Abs((it.Dt.TimeOfDay - GetTime().TimeOfDay).TotalSeconds) < _alarmCheckInterval.TotalSeconds)
-                    {
-                        await SayThis(FormatTimeForSpeech(it.Dt) + " " + it.Title);
-                    }
-                }
+                _honorQuietTime = false;
+                _checkInterval = TimeSpan.FromSeconds(5);
+                _announceInterval = TimeSpan.FromMinutes(15);
             }
+#endif
         }
-
-        async private void Timer_Tick(object sender, object e)
-        {
-            await SetOffset();
-            await SayTime();
-        }
-
-        private async Task SayTime()
+        private async void Page_Loaded(object sender, RoutedEventArgs e)
         {
             try
             {
-                var now = GetTime();
-                if (now.Hour >= 7 && now.Hour <= 21)
-                    await SayThis(FormatTimeForSpeech(now));
-                var min = (double) now.Minute + (now.Second / 60.0);
-                var intervalMinutes = _interval.Minutes;
-                while (min >= intervalMinutes)
-                    min -= intervalMinutes;
-                if (min > intervalMinutes - 1)
-                    min = 0;
-                _bongTimer.Interval = TimeSpan.FromMinutes(intervalMinutes - min);
-                Log("Interval set to " + _bongTimer.Interval.TotalMinutes.ToString("0.00") + " minutes");
+                Log("Start");
+                await CheckOffset();
+                await ShouldISaySomething();
+                var timer = new DispatcherTimer();
+                timer.Interval = _checkInterval;
+                timer.Tick += AlarmTimer_Tick;
+                timer.Start();
             }
             catch (Exception exc)
             {
@@ -79,24 +50,109 @@ namespace PiUi
             }
         }
 
+        private async void AlarmTimer_Tick(object sender, object e)
+        {
+            try
+            {
+                await ShouldISaySomething();
+            }
+            catch (Exception exc)
+            {
+                Log(exc.Message);
+            }
+        }
+
+        int _lastBlock = int.MinValue;
+        DateTimeOffset _lastDate = DateTimeOffset.MinValue;
+        private async Task ShouldISaySomething()
+        {
+            await CheckOffset();
+            var now = GetTime();
+            if (_lastDate.Date != now.Date)
+                await UpdateInterestingTimes();
+            _lastDate = now;
+            var block = (int)(now.Minute / _announceInterval.TotalMinutes);
+            if (_lastBlock != block)
+            {
+                if (now.Minute < 1)
+                    PlayBongs(now);
+                else
+                    await SayThis(FormatTimeForSpeech(now));
+                _lastBlock = block;
+            }
+            else
+            {
+                foreach (var it in _its)
+                {
+                    if (it.Said)
+                        continue;
+                    var age = (now.TimeOfDay - it.Dt.TimeOfDay).TotalSeconds;
+                    if (age >= 0 && age < _checkInterval.TotalSeconds * 5)
+                    {
+                        await SayThis(FormatTimeForSpeech(it.Dt) + " " + it.Title);
+                        it.Said = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        bool  QuietTime(DateTimeOffset dt)
+        {
+            if (!_honorQuietTime)
+                return false;
+            int startDay = 7;
+            int endDay = 22;
+            if (dt.DayOfWeek == DayOfWeek.Sunday)
+                startDay = 10;
+
+            if (dt.Hour >= startDay && dt.Hour < endDay)
+                return false;
+            return true;     
+        }
+        
         private string FormatTimeForSpeech(DateTimeOffset dt)
         {
             return dt.ToString("t");
         }
 
+        SpeechSynthesizer _speaker = new SpeechSynthesizer();
         string _lastSayThis;
-        private async Task SayThis(string str)
+        private async Task SayThis(string str, bool force = false)
         {
-            Log("SayThis " + str);
+            Log("SayThis " + str + "," + media.CurrentState);
+            if (QuietTime(GetTime()))
+                return; 
             if (str == _lastSayThis)
-                return;
-            var speaker = new SpeechSynthesizer();
-            var stream = await speaker.SynthesizeTextToStreamAsync(str);
-            var me = this.media;
-            me.SetSource(stream, stream.ContentType);
-            me.Play();
+            {
+                Log("SayThis duplicate");
+                if (!force)
+                    return;
+            }
+            while (media.CurrentState == MediaElementState.Opening ||
+                media.CurrentState == MediaElementState.Playing)
+            {
+                Log("SayThis busy");
+                await Task.Delay(TimeSpan.FromSeconds(.1));
+            }
+            var stream = await _speaker.SynthesizeTextToStreamAsync(str);
+            media.SetSource(stream, stream.ContentType);
+            media.Play();
+
             _lastSayThis = str;
         }
+        List<string> _chimes = new List<string>() { "stmichael.mp3", "westminster.mp3", "whittington.mp3", "avemaria.mp3", "beethoven_9thsym.mp3" };
+        Random _rnd = new Random();
+        void PlayBongs(DateTimeOffset now)
+        {
+            var hour = now.Hour % 12;
+            if (hour == 0)
+                hour = 12;
+            LoopSound("w_base.mp3", "w_mid_bong.mp3", hour);
+            //var i = _rnd.Next(_chimes.Count());
+            //var sound = @"ms-appx:///Assets/" + _chimes[i];
+        }
+
         void Log(string str)
         {
             lst.Items.Insert(0, str);
@@ -140,58 +196,91 @@ namespace PiUi
             {
                 Title = title;
                 Dt = dt;
+                Said = false;
             }
 
             public string Title { get; set; }
             public DateTimeOffset Dt { get; set; }
+            public bool Said { get; internal set; }
         }
         List<Interesting> _its = new List<Interesting>();
-        private async void btnNow_Click(object sender, RoutedEventArgs e)
+        private async void btnNow_Click(object sender, RoutedEventArgs rea)
         {
             try
             {
-                AddInteresting("Surprise", GetTime().AddMinutes(.5));
-
-                await SetOffset();
-                await SayThis(FormatTimeForSpeech(GetTime()));
+                PlayBongs(GetTime());
             }
             catch (Exception exc)
             {
                 Log(exc.Message);
             }
         }
-
-        private async Task GetInterestingTimes()
+        
+        private void LoopSound(string baseFile, string loopFile, int count)
         {
-            Log("GetInterestingTimes");
-            await AddSunriseSunset();
-            AddInteresting("Dad Birthday Minute", DateTimeOffset.Parse("11:16"));
-            AddInteresting("Mom Birthday Minute", DateTimeOffset.Parse("15:19"));
-            AddInteresting("Twin Birthday Minute", DateTimeOffset.Parse("14:17"));
-            AddInteresting("Max Birthday Minute", DateTimeOffset.Parse("12:10"));
+            if (QuietTime(GetTime()))
+                return;
+     
+            var me = this.media;
+            me.Source = new Uri(@"ms-appx:///Assets/" + baseFile);
+            me.Play();
+            int i = 0;
+            me.MediaEnded += (s, e) =>
+            {
+                if (i++ < count)
+                {
+                    me.Source = new Uri(@"ms-appx:///Assets/" + loopFile);
+                    me.Play();
+                }
+            };
         }
 
-        private async Task AddSunriseSunset()
+        private void Media_MediaEnded(object sender, RoutedEventArgs e)
+        {
+            throw new NotImplementedException();
+        }
+
+        private async Task UpdateInterestingTimes()
+        {
+            Log("GetInterestingTimes");
+            await UpdateSunriseSunset();
+            UpdateInteresting("Dad Birthday Minute", DateTimeOffset.Parse("11:16"));
+            UpdateInteresting("Mom Birthday Minute", DateTimeOffset.Parse("15:19"));
+            UpdateInteresting("Twin Birthday Minute", DateTimeOffset.Parse("14:17"));
+            UpdateInteresting("Max Birthday Minute", DateTimeOffset.Parse("12:10"));
+        }
+
+        private async Task UpdateSunriseSunset()
         {
             var sunriseUrl = @"http://api.sunrise-sunset.org/json?lat=39.593887&lng=-76.596008&date=today";
             var str = await GetStringFromTubes(sunriseUrl);
             var json = JsonValue.Parse(str);
             var resultJson = json.GetObject().GetNamedObject("results");
-            var sunrise = resultJson.GetObject().GetNamedString("sunrise");
-            var dt = new DateTimeOffset(DateTime.Parse(sunrise).ToLocalTime());
-            AddInteresting("Sunrise", dt);
-            var sunset = resultJson.GetObject().GetNamedString("sunset");
-            dt = new DateTimeOffset(DateTime.Parse(sunset).ToLocalTime());
-            AddInteresting("Sunset", dt);
+            UpdateInteresting("Sunrise", GetDt(resultJson, "sunrise"));
+            UpdateInteresting("Sunset", GetDt(resultJson, "sunset"));
+            UpdateInteresting("Solar Noon", GetDt(resultJson, "solar_noon"));
         }
 
-        private void AddInteresting(string title, DateTimeOffset dt)
+        private DateTimeOffset GetDt(JsonObject resultJson, string key)
         {
-            _its.Add(new Interesting(title, dt));
+            var sunrise = resultJson.GetObject().GetNamedString(key);
+            return new DateTimeOffset(DateTime.Parse(sunrise).ToLocalTime());
+        }
+
+        private void UpdateInteresting(string title, DateTimeOffset dt)
+        {
+            var it = _its.SingleOrDefault(i => i.Title == title);
+            if (it != null)
+            {
+                it.Dt = dt;
+                it.Said = false;
+            }
+            else
+                _its.Add(new Interesting(title, dt));
         }
 
         DateTimeOffset _lastOffset = DateTimeOffset.MinValue;
-        private async Task SetOffset()
+        private async Task CheckOffset()
         {
             if (Math.Abs((_lastOffset - DateTimeOffset.Now).TotalHours) < 1)
                 return;
@@ -204,75 +293,9 @@ namespace PiUi
             Log("Offsetted " + GetTime());
         }
 
-        private async void Page_Loaded(object sender, RoutedEventArgs e)
+        private async void btnNow2_Click(object sender, RoutedEventArgs e)
         {
-            await GetInterestingTimes();
+            await SayThis("Chicken Hat", true);
         }
-    }
-
-    class TimeUtils
-    {
-                async Task RequestTime()
-        {
-            DatagramSocket socket = new DatagramSocket();
-            socket.MessageReceived += socket_MessageReceived;
-            await socket.ConnectAsync(new HostName("time.windows.com"), "123");
-
-            using (DataWriter writer = new DataWriter(socket.OutputStream))
-            {
-                byte[] container = new byte[48];
-                container[0] = 0x1B;
-
-                writer.WriteBytes(container);
-                await writer.StoreAsync();
-            }
-        }
-
-        void socket_MessageReceived(DatagramSocket sender, DatagramSocketMessageReceivedEventArgs args)
-        {
-            using (DataReader reader = args.GetDataReader())
-            {
-                byte[] b = new byte[48];
-
-                reader.ReadBytes(b);
-
-                var time = GetNetworkTime(b);
-                //sta.Text = time.ToString();
-            }
-        }
-        public static DateTimeOffset GetNetworkTime(byte[] rawData)
-        {
-            //Offset to get to the "Transmit Timestamp" field (time at which the reply 
-            //departed the server for the client, in 64-bit timestamp format."
-            const byte serverReplyTime = 40;
-
-            //Get the seconds part
-            ulong intPart = BitConverter.ToUInt32(rawData, serverReplyTime);
-
-            //Get the seconds fraction
-            ulong fractPart = BitConverter.ToUInt32(rawData, serverReplyTime + 4);
-
-            //Convert From big-endian to little-endian
-            intPart = SwapEndianness(intPart);
-            fractPart = SwapEndianness(fractPart);
-
-            var milliseconds = (intPart * 1000) + ((fractPart * 1000) / 0x100000000L);
-
-            //**UTC** time
-            var networkDateTime = (new DateTime(1900, 1, 1)).AddMilliseconds((long)milliseconds);
-            var rv = DateTimeOffset.FromUnixTimeMilliseconds((long) milliseconds);
-            return rv;
-        }
-
-        // stackoverflow.com/a/3294698/162671
-        static uint SwapEndianness(ulong x)
-        {
-            return (uint)(((x & 0x000000ff) << 24) +
-                           ((x & 0x0000ff00) << 8) +
-                           ((x & 0x00ff0000) >> 8) +
-                           ((x & 0xff000000) >> 24));
-        }
-
-
     }
 }
