@@ -39,6 +39,12 @@ namespace PiUi
                 Log("Start");
                 await CheckOffset();
                 await ShouldISaySomething();
+                if (false)
+                {
+                    Log("Testing!!!");
+                    Test();
+                    return;
+                }
                 var timer = new DispatcherTimer();
                 timer.Interval = _checkInterval;
                 timer.Tick += AlarmTimer_Tick;
@@ -46,7 +52,20 @@ namespace PiUi
             }
             catch (Exception exc)
             {
-                Log(exc.Message);
+                Error(exc.Message);
+            }
+        }
+        DateTimeOffset? _dtOverride;
+        bool _reallyTalk = true;
+        private async void Test()
+        {
+            _reallyTalk = false;
+            var start = DateTimeOffset.Parse("6:00");
+            var end = DateTimeOffset.Parse("23:00");
+            for (var dt = start; dt < end; dt += _checkInterval)
+            {
+                _dtOverride = dt;
+                await ShouldISaySomething();
             }
         }
 
@@ -58,7 +77,7 @@ namespace PiUi
             }
             catch (Exception exc)
             {
-                Log(exc.Message);
+                Error(exc.Message);
             }
         }
 
@@ -77,22 +96,19 @@ namespace PiUi
                 if (now.Minute < 1)
                     PlayBongs(now);
                 else
+                {
                     await SayThis(FormatTimeForSpeech(now));
+                    await SayTemp();
+                }
                 _lastBlock = block;
             }
             else
             {
-                foreach (var it in _its)
+                var it = _its.FirstOrDefault(i => i.Trigger(now));
+                if (it != null)
                 {
-                    if (it.Said)
-                        continue;
-                    var age = (now.TimeOfDay - it.Dt.TimeOfDay).TotalSeconds;
-                    if (age >= 0 && age < _checkInterval.TotalSeconds * 5)
-                    {
-                        await SayThis(FormatTimeForSpeech(it.Dt) + " " + it.Title);
-                        it.Said = true;
-                        break;
-                    }
+                    await SayThis(FormatTimeForSpeech(it.Dt) + " " + it.Title);
+                    it.Said = true;
                 }
             }
         }
@@ -120,7 +136,7 @@ namespace PiUi
         string _lastSayThis;
         private async Task SayThis(string str, bool force = false)
         {
-            Log("SayThis " + str + "," + media.CurrentState);
+            LogSaid("SayThis " + str);
             if (QuietTime(GetTime()))
                 return; 
             if (str == _lastSayThis)
@@ -132,12 +148,13 @@ namespace PiUi
             while (media.CurrentState == MediaElementState.Opening ||
                 media.CurrentState == MediaElementState.Playing)
             {
-                Log("SayThis busy");
-                await Task.Delay(TimeSpan.FromSeconds(.1));
+                Log("SayThis busy " + media.CurrentState);
+                await Task.Delay(TimeSpan.FromSeconds(1));
             }
             var stream = await _speaker.SynthesizeTextToStreamAsync(str);
             media.SetSource(stream, stream.ContentType);
-            media.Play();
+            if (_reallyTalk)
+                media.Play();
 
             _lastSayThis = str;
         }
@@ -155,13 +172,24 @@ namespace PiUi
 
         void Log(string str)
         {
-            lst.Items.Insert(0, str);
+            lst.Items.Insert(0, DateTimeOffset.Now.ToString("HH:mm:ss") + " " + str);
         }
 
+        void Error(string str)
+        {
+            Log("ERROR " + str);
+        }
+
+        void LogSaid(string str)
+        {
+            lstSaid.Items.Insert(0, DateTimeOffset.Now.ToString("HH:mm:ss") + " " + str);
+        }
 
         TimeSpan _offset = new TimeSpan(0);
         private DateTimeOffset GetTime()
         {
+            if (_dtOverride.HasValue)
+                return _dtOverride.Value;
             return DateTimeOffset.Now + _offset;
         }
 
@@ -171,7 +199,7 @@ namespace PiUi
             var url = @"http://free.timeanddate.com/clock/i3a2durd/n419/fn8/fs16/bas2/bacfff/pa8/tt0/tw1/tm1/th1/ta1/tb4";
             var str = await GetStringFromTubes(url);
             if (str == null)
-                return DateTimeOffset.MinValue;
+                return DateTimeOffset.Now;
             var start = str.IndexOf("<span id=t1>") + "<span id=t1>".Length;
             var end = str.IndexOf("</span>", start);
             var content = str.Substring(start, end - start);
@@ -179,81 +207,128 @@ namespace PiUi
             return DateTimeOffset.Parse(content);
         }
 
-        private static async Task<string> GetStringFromTubes(string url)
+        private async Task<string> GetStringFromTubes(string url)
         {
-            HttpClient httpClient = new HttpClient();
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, new Uri(url));
-            HttpResponseMessage httpResponseMessage = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            string text = await httpResponseMessage.Content.ReadAsStringAsync();
-            if (httpResponseMessage.StatusCode == HttpStatusCode.OK)
-                return await httpResponseMessage.Content.ReadAsStringAsync();
-            else
-                return null;
+            try
+            {
+                HttpClient httpClient = new HttpClient();
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, new Uri(url));
+                HttpResponseMessage httpResponseMessage = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                string text = await httpResponseMessage.Content.ReadAsStringAsync();
+                if (httpResponseMessage.StatusCode == HttpStatusCode.OK)
+                    return await httpResponseMessage.Content.ReadAsStringAsync();
+            }
+            catch (Exception exc)
+            {
+                Error(exc.Message);
+            }
+
+            return null;
         }
         public class Interesting
         {
-            public Interesting(string title, DateTimeOffset dt)
+            public Interesting(string title, DateTimeOffset dt, DayOfWeek[] days)
             {
                 Title = title;
                 Dt = dt;
+                Days = days;
                 Said = false;
+            }
+            public override string ToString()
+            {
+                return Title + " " + Dt + " " + Days;
             }
 
             public string Title { get; set; }
             public DateTimeOffset Dt { get; set; }
             public bool Said { get; internal set; }
+            public DayOfWeek[] Days { get; set; }
+
+            internal bool Trigger(DateTimeOffset now)
+            {
+                if (Said)
+                    return false;
+                if (Days != null)
+                {
+                    if (!Days.Contains(now.DayOfWeek))
+                        return false;
+                }
+                var age = (now.TimeOfDay - Dt.TimeOfDay).TotalSeconds;
+                return (age >= 0 && age < TimeSpan.FromMinutes(5).TotalSeconds);
+            }
         }
         List<Interesting> _its = new List<Interesting>();
         private async void btnNow_Click(object sender, RoutedEventArgs rea)
         {
             try
             {
-                PlayBongs(GetTime());
+                _lastOffsetSet = DateTimeOffset.MinValue;
+                await CheckOffset();
+                await SayTemp();
+                await UpdateInterestingTimes();
+                foreach (var it in _its)
+                    Log(it.ToString());
+
             }
             catch (Exception exc)
             {
-                Log(exc.Message);
+                Error(exc.Message);
             }
         }
-        
+
+        private async Task SayTemp()
+        {
+            var jsonString = await GetStringFromTubes("http://api.wunderground.com/api/4659f100363b14f9/conditions/q/MD/monkton.json");
+            var json = JsonValue.Parse(jsonString);
+            var currentJson = json.GetObject().GetNamedObject("current_observation");
+            var temp = currentJson.GetObject().GetNamedNumber("temp_f");
+            await SayThis("Current temperature " + temp + " degrees", true);
+        }
+
         private void LoopSound(string baseFile, string loopFile, int count)
         {
+            LogSaid("LoopSound " + baseFile + "," + count);
             if (QuietTime(GetTime()))
                 return;
      
             var me = this.media;
             me.Source = new Uri(@"ms-appx:///Assets/" + baseFile);
-            me.Play();
+            if (_reallyTalk)
+                me.Play();
             int i = 0;
             me.MediaEnded += (s, e) =>
             {
                 if (i++ < count)
                 {
                     me.Source = new Uri(@"ms-appx:///Assets/" + loopFile);
-                    me.Play();
+                    if (_reallyTalk)
+                        me.Play();
                 }
             };
-        }
-
-        private void Media_MediaEnded(object sender, RoutedEventArgs e)
-        {
-            throw new NotImplementedException();
         }
 
         private async Task UpdateInterestingTimes()
         {
             Log("GetInterestingTimes");
             await UpdateSunriseSunset();
+
             UpdateInteresting("Dad Birthday Minute", DateTimeOffset.Parse("11:16"));
             UpdateInteresting("Mom Birthday Minute", DateTimeOffset.Parse("15:19"));
             UpdateInteresting("Twin Birthday Minute", DateTimeOffset.Parse("14:17"));
+            UpdateInteresting("Allegra Birthday Minute", DateTimeOffset.Parse("12:24"));
+            UpdateInteresting("Ramsey Birthday Minute", DateTimeOffset.Parse("12:25"));
             UpdateInteresting("Max Birthday Minute", DateTimeOffset.Parse("12:10"));
+            UpdateInteresting("Max Birthday Minute", DateTimeOffset.Parse("9:31"));
+            UpdateInteresting("School Bus", DateTimeOffset.Parse("7:50"), _weekdays);
+            UpdateInteresting("5 minutes", DateTimeOffset.Parse("7:45"), _weekdays);
         }
-
+        DayOfWeek[] _weekdays = new DayOfWeek[] { DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday };
         private async Task UpdateSunriseSunset()
         {
             var sunriseUrl = @"http://api.sunrise-sunset.org/json?lat=39.593887&lng=-76.596008&date=today";
             var str = await GetStringFromTubes(sunriseUrl);
+            if (str == null)
+                return;
             var json = JsonValue.Parse(str);
             var resultJson = json.GetObject().GetNamedObject("results");
             UpdateInteresting("Sunrise", GetDt(resultJson, "sunrise"));
@@ -267,35 +342,31 @@ namespace PiUi
             return new DateTimeOffset(DateTime.Parse(sunrise).ToLocalTime());
         }
 
-        private void UpdateInteresting(string title, DateTimeOffset dt)
+        private void UpdateInteresting(string title, DateTimeOffset dt, DayOfWeek[] days = null)
         {
             var it = _its.SingleOrDefault(i => i.Title == title);
             if (it != null)
             {
                 it.Dt = dt;
                 it.Said = false;
+                it.Days = days;
             }
             else
-                _its.Add(new Interesting(title, dt));
+                _its.Add(new Interesting(title, dt, days));
         }
 
-        DateTimeOffset _lastOffset = DateTimeOffset.MinValue;
+        DateTimeOffset _lastOffsetSet = DateTimeOffset.MinValue;
         private async Task CheckOffset()
         {
-            if (Math.Abs((_lastOffset - DateTimeOffset.Now).TotalHours) < 1)
+            if (Math.Abs((_lastOffsetSet - DateTimeOffset.Now).TotalHours) < 1)
                 return;
             Log("Local " + DateTimeOffset.Now.ToString());
             var nistTime = await GetNistTime();
             Log("NIST " + nistTime);
             _offset = nistTime - DateTimeOffset.Now;
             Log("Set Offset " + _offset);
-            _lastOffset = DateTimeOffset.Now;
+            _lastOffsetSet = DateTimeOffset.Now;
             Log("Offsetted " + GetTime());
-        }
-
-        private async void btnNow2_Click(object sender, RoutedEventArgs e)
-        {
-            await SayThis("Chicken Hat", true);
         }
     }
 }

@@ -12,7 +12,7 @@
         <TextBlock>Hiding</TextBlock>
         <MediaElement Name="media"/>
         <Button Click="btnNow_Click">Now</Button>
-        <Button Click="btnNow2_Click">Now2</Button>
+        <ListBox Name="lstSaid" MaxHeight="200"/>
         <ListBox Name="lst" MaxHeight="500"/>
     </StackPanel>
 </Page>
