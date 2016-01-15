@@ -10,9 +10,10 @@
 
     <StackPanel Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
         <TextBlock>Hiding</TextBlock>
-        <MediaElement Name="media"/>
+        <MediaElement Name="media" MediaEnded="Media_MediaEnded"/>
         <Button Click="btnNow_Click">Now</Button>
-        <ListBox Name="lstSaid" MaxHeight="200"/>
-        <ListBox Name="lst" MaxHeight="500"/>
+        <ListBox Name="lstSaid" MaxHeight="200" BorderBrush="Black" BorderThickness="2"/>
+        <ListBox Name="lstQueue" MaxHeight="200" BorderBrush="Black" BorderThickness="2"/>
+        <ListBox Name="lst" MaxHeight="500" BorderBrush="Black" BorderThickness="2"/>
     </StackPanel>
 </Page>

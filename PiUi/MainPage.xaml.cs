@@ -20,6 +20,7 @@ namespace PiUi
         TimeSpan _announceInterval = TimeSpan.FromMinutes(30);
         TimeSpan _checkInterval = TimeSpan.FromSeconds(30);
         bool _honorQuietTime = true;
+        bool _useTubes = true;
         public MainPage()
         {
             this.InitializeComponent();
@@ -29,6 +30,7 @@ namespace PiUi
                 _honorQuietTime = false;
                 _checkInterval = TimeSpan.FromSeconds(5);
                 _announceInterval = TimeSpan.FromMinutes(15);
+                _useTubes = false;
             }
 #endif
         }
@@ -136,7 +138,7 @@ namespace PiUi
         string _lastSayThis;
         private async Task SayThis(string str, bool force = false)
         {
-            LogSaid("SayThis " + str);
+            LogSaid("SAY: " + str);
             if (QuietTime(GetTime()))
                 return; 
             if (str == _lastSayThis)
@@ -145,12 +147,7 @@ namespace PiUi
                 if (!force)
                     return;
             }
-            while (media.CurrentState == MediaElementState.Opening ||
-                media.CurrentState == MediaElementState.Playing)
-            {
-                Log("SayThis busy " + media.CurrentState);
-                await Task.Delay(TimeSpan.FromSeconds(1));
-            }
+            await WaitOnMedia();
             var stream = await _speaker.SynthesizeTextToStreamAsync(str);
             media.SetSource(stream, stream.ContentType);
             if (_reallyTalk)
@@ -158,6 +155,20 @@ namespace PiUi
 
             _lastSayThis = str;
         }
+
+        private async Task WaitOnMedia()
+        {
+            var waitCount = 0;
+            while (media.CurrentState == MediaElementState.Opening ||
+                media.CurrentState == MediaElementState.Playing)
+            {
+                Log("WaitOnMedia " + media.CurrentState + ", " + media.Source + ", " + ++waitCount);
+                await Task.Delay(TimeSpan.FromSeconds(1));
+            }
+            if (waitCount > 0)
+                Log("WaitOnMedia Done " + media.CurrentState + ", " + media.Source + ", " + waitCount);
+        }
+
         List<string> _chimes = new List<string>() { "stmichael.mp3", "westminster.mp3", "whittington.mp3", "avemaria.mp3", "beethoven_9thsym.mp3" };
         Random _rnd = new Random();
         void PlayBongs(DateTimeOffset now)
@@ -165,9 +176,24 @@ namespace PiUi
             var hour = now.Hour % 12;
             if (hour == 0)
                 hour = 12;
-            LoopSound("w_base.mp3", "w_mid_bong.mp3", hour);
+            HourlyChime(hour);
             //var i = _rnd.Next(_chimes.Count());
             //var sound = @"ms-appx:///Assets/" + _chimes[i];
+        }
+
+        private async void HourlyChime(int hour)
+        {
+            var block = _rnd.Next(5);
+            if (block == 0)
+                await Chime("b", hour);
+            else if (block == 1)
+                await LoopSound("w", hour);
+            else if (block == 2)
+                await LoopSound("wh", hour);
+            else if (block == 3)
+                await LoopSound("a", hour);
+            else 
+                await LoopSound("st", hour);
         }
 
         void Log(string str)
@@ -209,6 +235,8 @@ namespace PiUi
 
         private async Task<string> GetStringFromTubes(string url)
         {
+            if (_useTubes == false)
+                return null;
             try
             {
                 HttpClient httpClient = new HttpClient();
@@ -262,13 +290,17 @@ namespace PiUi
         {
             try
             {
+                await LoopSound("a", 3);
+                return;
+                await Chime("b", 3);
+
                 _lastOffsetSet = DateTimeOffset.MinValue;
                 await CheckOffset();
                 await SayTemp();
                 await UpdateInterestingTimes();
                 foreach (var it in _its)
                     Log(it.ToString());
-
+                await Chime("b", GetTime().Hour);
             }
             catch (Exception exc)
             {
@@ -284,32 +316,72 @@ namespace PiUi
             var temp = currentJson.GetObject().GetNamedNumber("temp_f");
             await SayThis("Current temperature " + temp + " degrees", true);
         }
-
-        private void LoopSound(string baseFile, string loopFile, int count)
+        private async Task Chime(string stub, int hour)
         {
-            LogSaid("LoopSound " + baseFile + "," + count);
+            LogSaid("CHIME: " + stub + "," + hour);
             if (QuietTime(GetTime()))
                 return;
-     
-            var me = this.media;
-            me.Source = new Uri(@"ms-appx:///Assets/" + baseFile);
-            if (_reallyTalk)
-                me.Play();
-            int i = 0;
-            me.MediaEnded += (s, e) =>
+
+            var baseFile = stub + "_base.mp3";
+            QueueMedia(new Uri(@"ms-appx:///Assets/Chimes/" + baseFile));
+
+            var chimeFile = stub + "_bongs_" + hour.ToString("00") + ".mp3";
+            QueueMedia(new Uri(@"ms-appx:///Assets/Chimes/" + chimeFile));
+            await PlayNextSound();
+        }
+        Queue<Uri> _soundsToPlay = new Queue<Uri>();
+        async Task PlayNextSound()
+        {
+            await WaitOnMedia();
+            if (_soundsToPlay.Count() > 0)
             {
-                if (i++ < count)
-                {
-                    me.Source = new Uri(@"ms-appx:///Assets/" + loopFile);
-                    if (_reallyTalk)
-                        me.Play();
-                }
-            };
+                media.Stop();
+                ShowQueue();
+                media.Source = _soundsToPlay.Dequeue();
+                if (_reallyTalk)
+                    media.Play();
+            }
+        }
+        void ShowQueue()
+        {
+            lock(_soundsToPlay)
+            {
+                lstQueue.Items.Clear();
+                foreach (var s in _soundsToPlay)
+                    lstQueue.Items.Add(s);
+            }
+        }
+        private async void Media_MediaEnded(object sender, RoutedEventArgs e)
+        {
+            ShowQueue();
+            await PlayNextSound();
+        }
+
+        private void QueueMedia(Uri uri)
+        {
+            _soundsToPlay.Enqueue(uri);
+            ShowQueue();
+        }
+
+        private async Task LoopSound(string stub, int count)
+        {
+            LogSaid("LOOP: " + stub + "," + count);
+            if (QuietTime(GetTime()))
+                return;
+
+            QueueMedia(new Uri(@"ms-appx:///Assets/Chimes/" + stub + "_base.mp3"));
+            if (count > 1)
+            {
+                for (int i = 0; i < count - 1; i++)
+                    QueueMedia(new Uri(@"ms-appx:///Assets/Chimes/" + stub + "_mid_bong.mp3"));
+            }
+            QueueMedia(new Uri(@"ms-appx:///Assets/Chimes/" + stub + "_last_bong.mp3"));
+            await PlayNextSound();
         }
 
         private async Task UpdateInterestingTimes()
         {
-            Log("GetInterestingTimes");
+            Log("UpdateInterestingTimes");
             await UpdateSunriseSunset();
 
             UpdateInteresting("Dad Birthday Minute", DateTimeOffset.Parse("11:16"));
@@ -356,6 +428,8 @@ namespace PiUi
         }
 
         DateTimeOffset _lastOffsetSet = DateTimeOffset.MinValue;
+        private Uri _playNext;
+
         private async Task CheckOffset()
         {
             if (Math.Abs((_lastOffsetSet - DateTimeOffset.Now).TotalHours) < 1)
