@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -22,16 +21,21 @@ namespace PiUi
         TimeSpan _checkInterval = TimeSpan.FromSeconds(30);
         bool _honorQuietTime = true;
         bool _useTubes = true;
+        Blinky _blinky;
+        DhtSensor _dht;
+
         public MainPage()
         {
             this.InitializeComponent();
+            _blinky = new Blinky();
+            _dht = new DhtSensor();
 #if DEBUG
             if (System.Diagnostics.Debugger.IsAttached)
             {
                 _honorQuietTime = false;
                 _checkInterval = TimeSpan.FromSeconds(5);
                 _announceInterval = TimeSpan.FromMinutes(15);
-                _useTubes = false;
+                //_useTubes = false;
             }
 #endif
         }
@@ -88,6 +92,8 @@ namespace PiUi
         DateTimeOffset _lastDate = DateTimeOffset.MinValue;
         private async Task ShouldISaySomething()
         {
+            await _dht.UpdateReadings();
+            await FileUtils.RemoteLog("Indoor " + _dht);
             await CheckOffset();
             var now = GetTime();
             if (_lastDate.Date != now.Date)
@@ -101,7 +107,7 @@ namespace PiUi
                 else
                 {
                     await SayThis(FormatTimeForSpeech(now));
-                    await SayTemp();
+                    await SayWeather();
                 }
                 _lastBlock = block;
             }
@@ -140,6 +146,7 @@ namespace PiUi
         private async Task SayThis(string str, bool force = false)
         {
             LogSaid("SAY: " + str);
+            await FileUtils.RemoteLog("SAY: " + str);
             if (QuietTime(GetTime()))
                 return; 
             if (str == _lastSayThis)
@@ -151,6 +158,7 @@ namespace PiUi
             await WaitOnMedia();
             var stream = await _speaker.SynthesizeTextToStreamAsync(str);
             media.SetSource(stream, stream.ContentType);
+            _blinky.SetLed(Blinky.LedEnum.Green, true);
             if (_reallyTalk)
                 media.Play();
 
@@ -301,6 +309,8 @@ namespace PiUi
         {
             try
             {
+                await SayWeather();
+                return;
                 LoopSound("b", 3);
                 LoopSound("st", 3);
                 return;
@@ -308,7 +318,6 @@ namespace PiUi
 
                 _lastOffsetSet = DateTimeOffset.MinValue;
                 await CheckOffset();
-                await SayTemp();
                 await UpdateInterestingTimes();
                 foreach (var it in _its)
                     Log(it.ToString());
@@ -319,14 +328,46 @@ namespace PiUi
                 Error(exc.Message);
             }
         }
+        async Task SayWeather()
+        {
+            await SayIndoorTemp();
+            await SayAlerts();
+            await SayTemp();
+        }
+
+        private async Task SayIndoorTemp()
+        {
+            await _dht.UpdateReadings();
+            await SayThis("Indoor temperature " + _dht.Temp.ToString("0.0") + " degrees", true);
+        }
 
         private async Task SayTemp()
         {
+            // alerts http://api.wunderground.com/api/4659f100363b14f9/alerts/q/MD/monkton.json
             var jsonString = await GetStringFromTubes("http://api.wunderground.com/api/4659f100363b14f9/conditions/q/MD/monkton.json");
             var json = JsonValue.Parse(jsonString);
             var currentJson = json.GetObject().GetNamedObject("current_observation");
             var temp = currentJson.GetObject().GetNamedNumber("temp_f");
             await SayThis("Current temperature " + temp + " degrees", true);
+            var feelsLikeString = currentJson.GetObject().GetNamedString("feelslike_f");
+            var feelsLike = double.Parse(feelsLikeString);
+            if (feelsLike < 10 || feelsLike > 100)
+                await SayThis("Feels like " + feelsLike + " degrees", true);
+            else
+                Log("Feels like " + feelsLike + " degrees");
+        }
+        private async Task SayAlerts()
+        {
+            var jsonString = await GetStringFromTubes("http://api.wunderground.com/api/4659f100363b14f9/alerts/q/MD/monkton.json");
+            var json = JsonValue.Parse(jsonString);
+            var alerts = json.GetObject().GetNamedArray("alerts");
+            foreach (var alert in alerts)
+            {
+                var description = alert.GetObject().GetNamedString("description");
+                await SayThis("Weather Alert " + description, true);
+                var msg = alert.GetObject().GetNamedString("message");
+                Log(msg);
+            }
         }
         private void Chime(string stub, int hour)
         {
@@ -356,6 +397,7 @@ namespace PiUi
                     var uri = _soundsToPlay.Dequeue();
                     media.Source = uri;
                     Log("Dequeue " + uri);
+                    _blinky.SetLed(Blinky.LedEnum.Blue, true);
                     if (_reallyTalk)
                         media.Play();
                 }
@@ -377,6 +419,8 @@ namespace PiUi
         private void Media_MediaEnded(object sender, RoutedEventArgs e)
         {
             Log("MediaEnded " + MediaString());
+            _blinky.SetLed(Blinky.LedEnum.Blue, false);
+            _blinky.SetLed(Blinky.LedEnum.Green, false);
             media.Stop();
             media.Source = null;
             ShowQueue();

@@ -1,0 +1,32 @@
+{
+  "siteName": {
+    "value": "DanoPod2016b"
+  },
+  "hostingPlanName": {
+    "value": "Default1"
+  },
+  "siteLocation": {
+    "value": "East US"
+  },
+  "sku": {
+    "value": "Free"
+  },
+  "workerSize": {
+    "value": "0"
+  },
+  "serverName": {
+    "value": "danoponddb2016a"
+  },
+  "serverLocation": {
+    "value": "East US"
+  },
+  "administratorLogin": {
+    "value": "bookemdano"
+  },
+  "administratorLoginPassword": {
+    "value": "Postel0217"
+  },
+  "databaseName": {
+    "value": "DanoPod2016b_db"
+  }
+}

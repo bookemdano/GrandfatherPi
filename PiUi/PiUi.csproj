@@ -98,10 +98,13 @@
     <Compile Include="App.xaml.cs">
       <DependentUpon>App.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Blinky.cs" />
     <Compile Include="MainPage.xaml.cs">
       <DependentUpon>MainPage.xaml</DependentUpon>
     </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Temperature.cs" />
+    <Compile Include="Utils.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">
@@ -211,9 +214,18 @@
     </Page>
   </ItemGroup>
   <ItemGroup>
+    <SDKReference Include="WindowsIoT, Version=10.0.10586.0">
+      <Name>Windows IoT Extensions for the UWP</Name>
+    </SDKReference>
     <SDKReference Include="WindowsMobile, Version=10.0.10586.0">
       <Name>Windows Mobile Extensions for the UWP</Name>
     </SDKReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Sensors.Dht\Sensors.Dht.vcxproj">
+      <Project>{2cd70a4f-9eed-4cda-9e07-1a2bd33b4976}</Project>
+      <Name>Sensors.Dht</Name>
+    </ProjectReference>
   </ItemGroup>
   <PropertyGroup Condition=" '$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '14.0' ">
     <VisualStudioVersion>14.0</VisualStudioVersion>
